@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROBINS-I Bias Assessment Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: "Inter", sans-serif;
+            background-color: #f0f4f8;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; /* Align to top for better content flow */
+            min-height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 900px;
+            margin-top: 20px; /* Add some top margin */
+        }
+        .file-input-label {
+            display: inline-block;
+            background-color: #4f46e5;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .file-input-label:hover {
+            background-color: #4338ca;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #e2e8f0;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #e0e7ff;
+            font-weight: 600;
+            color: #374151;
+        }
+        tr:nth-child(even) {
+            background-color: #f9fafb;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #4f46e5;
+            animation: spin 1s ease infinite;
+            display: none; /* Hidden by default */
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .message-box {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none; /* Hidden by default */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">ROBINS-I Bias Assessment Agent</h1>
+
+        <div class="mb-6">
+            <p class="text-gray-600 mb-4">Upload a PDF document to assess the risk of bias using the ROBINS-I framework. The AI will analyze the document and provide an assessment for each domain, along with its reasoning.</p>
+            <input type="file" id="pdfInput" accept=".pdf">
+            <label for="pdfInput" class="file-input-label">
+                <span id="fileName">Choose PDF File</span>
+            </label>
+            <button id="assessButton" class="ml-4 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors duration-300">
+                Assess Bias
+            </button>
+        </div>
+
+        <div id="loadingSpinner" class="spinner"></div>
+        <div id="messageBox" class="message-box"></div>
+
+        <div id="resultsContainer" class="mt-8">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">Assessment Results</h2>
+            <table id="assessmentTable" class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden shadow-sm">
+                <thead>
+                    <tr>
+                        <th class="px-6 py-3">Domain</th>
+                        <th class="px-6 py-3">Risk of Bias Judgement</th>
+                        <th class="px-6 py-3">Reasoning</th>
+                    </tr>
+                </thead>
+                <tbody id="assessmentTableBody" class="bg-white divide-y divide-gray-200">
+                    </tbody>
+            </table>
+            <div id="overallAssessment" class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <h3 class="text-xl font-semibold text-blue-800 mb-2">Overall Risk of Bias</h3>
+                <p id="overallReasoning" class="text-blue-700"></p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // IMPORTANT: Replace 'YOUR_GEMINI_API_KEY' with your actual Gemini API Key
+        const GEMINI_API_KEY = 'AIzaSyDB1uzf08mXeXISxQR9tLLEtp6_7Rmojuw'; // Leave empty for Canvas to provide at runtime
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+        const pdfInput = document.getElementById('pdfInput');
+        const fileNameSpan = document.getElementById('fileName');
+        const assessButton = document.getElementById('assessButton');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const messageBox = document.getElementById('messageBox');
+        const assessmentTableBody = document.getElementById('assessmentTableBody');
+        const overallAssessmentDiv = document.getElementById('overallAssessment');
+        const overallReasoningP = document.getElementById('overallReasoning');
+        const resultsContainer = document.getElementById('resultsContainer');
+
+        let selectedFile = null;
+
+        // --- Event Listeners ---
+        pdfInput.addEventListener('change', (event) => {
+            selectedFile = event.target.files[0];
+            if (selectedFile) {
+                fileNameSpan.textContent = selectedFile.name;
+                hideMessage();
+            } else {
+                fileNameSpan.textContent = 'Choose PDF File';
+            }
+        });
+
+        assessButton.addEventListener('click', async () => {
+            if (!selectedFile) {
+                showMessage('Please select a PDF file first.', 'warning');
+                return;
+            }
+
+            if (selectedFile.type !== 'application/pdf') {
+                showMessage('Please upload a valid PDF file (.pdf).', 'warning');
+                return;
+            }
+
+            showLoading();
+            hideMessage();
+            clearResults();
+
+            try {
+                // Convert PDF to Base64
+                const base64Pdf = await fileToBase64(selectedFile);
+
+                // Construct the prompt for Gemini
+                const prompt = createGeminiPrompt();
+
+                // Prepare the payload for the Gemini API
+                const payload = {
+                    contents: [
+                        {
+                            role: "user",
+                            parts: [
+                                { text: prompt },
+                                {
+                                    inlineData: {
+                                        mimeType: selectedFile.type,
+                                        data: base64Pdf
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                "domains": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "domain": { "type": "STRING" },
+                                            "judgement": { "type": "STRING" },
+                                            "reasoning": { "type": "STRING" }
+                                        },
+                                        "required": ["domain", "judgement", "reasoning"]
+                                    }
+                                },
+                                "overallJudgement": { "type": "STRING" },
+                                "overallReasoning": { "type": "STRING" }
+                            },
+                            "required": ["domains", "overallJudgement", "overallReasoning"]
+                        }
+                    }
+                };
+
+                // Make the API call to Gemini
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`API error: ${response.status} ${response.statusText} - ${JSON.stringify(errorData)}`);
+                }
+
+                const result = await response.json();
+
+                // Check for valid response structure
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+
+                    const jsonResponseText = result.candidates[0].content.parts[0].text;
+                    const parsedResult = JSON.parse(jsonResponseText);
+
+                    displayResults(parsedResult);
+                    showMessage('Assessment complete!', 'success');
+
+                } else {
+                    showMessage('Received an empty or malformed response from the AI. Please try again or with a different document.', 'error');
+                }
+
+            } catch (error) {
+                console.error('Error during assessment:', error);
+                showMessage(`An error occurred: ${error.message}. Please check the console for details.`, 'error');
+            } finally {
+                hideLoading();
+            }
+        });
+
+        // --- Helper Functions ---
+
+        /**
+         * Converts a File object to a Base64 string.
+         * @param {File} file - The file to convert.
+         * @returns {Promise<string>} A promise that resolves with the Base64 string.
+         */
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // The result is a data URL, e.g., "data:application/pdf;base64,JVBERi..."
+                    // We need to extract only the base64 part after the comma.
+                    const base64String = reader.result.split(',')[1];
+                    resolve(base64String);
+                };
+                reader.onerror = error => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        /**
+         * Creates the detailed prompt for the Gemini API, instructing it on the ROBINS-I assessment.
+         * @returns {string} The constructed prompt.
+         */
+        function createGeminiPrompt() {
+            return `You are an expert in risk of bias assessment using the ROBINS-I (Risk Of Bias In Non-randomised Studies - of Interventions) tool.
+            Your task is to analyze the provided PDF document, which is a research study, and assess its risk of bias based on the ROBINS-I domains.
+            For each domain, provide a judgment (Low, Moderate, Serious, Critical, or No information) and a concise reasoning based on the content of the PDF.
+            Finally, provide an overall risk of bias judgment and its reasoning.
+
+            Here are the ROBINS-I domains and what to consider for each:
+
+            1.  **Bias due to confounding:**
+                * *Consider:* Were there pre-intervention differences between groups that could affect the outcome? Were these differences adequately adjusted for in the analysis?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            2.  **Bias in selection of participants into the study:**
+                * *Consider:* How were participants selected into the study and into intervention groups? Was this selection process likely to introduce bias?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            3.  **Bias in classification of interventions:**
+                * *Consider:* Was the intervention status (exposure) accurately and consistently classified for all participants? Could misclassification lead to bias?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            4.  **Bias due to deviations from intended interventions:**
+                * *Consider:* Were there important deviations from the planned interventions during the study? Were these deviations handled appropriately (e.g., intention-to-treat analysis)?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            5.  **Bias due to missing data:**
+                * *Consider:* Was there missing outcome data? Was the amount of missing data substantial? Was the missing data handled appropriately in the analysis (e.g., imputation methods)?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            6.  **Bias in measurement of outcomes:**
+                * *Consider:* Were the outcomes measured reliably and without bias? Was the outcome assessor blinded to intervention status? Could the measurement process itself introduce bias?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+            7.  **Bias in selection of the reported result:**
+                * *Consider:* Was the reported result selected from multiple analyses of the same data in a way that could introduce bias (e.g., only reporting statistically significant findings)? Was there selective reporting of outcomes?
+                * *Judgment:* Low, Moderate, Serious, Critical, No information.
+
+            **Output Format:** Provide the assessment as a JSON object with the following structure:
+            \`\`\`json
+            {
+                "domains": [
+                    {
+                        "domain": "Bias due to confounding",
+                        "judgement": "Your judgment (e.g., Low, Moderate, Serious, Critical, No information)",
+                        "reasoning": "Concise reasoning based on the PDF content"
+                    },
+                    // ... (repeat for all 7 domains)
+                ],
+                "overallJudgement": "Your overall judgment (e.g., Low, Moderate, Serious, Critical)",
+                "overallReasoning": "Concise reasoning for the overall judgment based on the domain assessments"
+            }
+            \`\`\`
+            Analyze the provided PDF and generate the JSON output.
+            `;
+        }
+
+        /**
+         * Displays the assessment results in the HTML table.
+         * @param {Object} data - The parsed JSON data from the Gemini API.
+         */
+        function displayResults(data) {
+            assessmentTableBody.innerHTML = ''; // Clear previous results
+            resultsContainer.style.display = 'block'; // Show results container
+
+            if (data.domains && Array.isArray(data.domains)) {
+                data.domains.forEach(item => {
+                    const row = assessmentTableBody.insertRow();
+                    row.className = 'hover:bg-gray-50'; // Add hover effect
+                    const domainCell = row.insertCell();
+                    const judgementCell = row.insertCell();
+                    const reasoningCell = row.insertCell();
+
+                    domainCell.textContent = item.domain;
+                    judgementCell.textContent = item.judgement;
+                    reasoningCell.textContent = item.reasoning;
+
+                    // Apply color based on judgment for better readability
+                    judgementCell.classList.add('font-semibold');
+                    switch (item.judgement.toLowerCase()) {
+                        case 'low':
+                            judgementCell.classList.add('text-green-600');
+                            break;
+                        case 'moderate':
+                            judgementCell.classList.add('text-yellow-600');
+                            break;
+                        case 'serious':
+                            judgementCell.classList.add('text-orange-600');
+                            break;
+                        case 'critical':
+                            judgementCell.classList.add('text-red-600');
+                            break;
+                        default:
+                            judgementCell.classList.add('text-gray-500');
+                            break;
+                    }
+                });
+            }
+
+            if (data.overallJudgement && data.overallReasoning) {
+                overallAssessmentDiv.style.display = 'block';
+                overallReasoningP.innerHTML = `<strong>Judgment:</strong> ${data.overallJudgement}<br><strong>Reasoning:</strong> ${data.overallReasoning}`;
+
+                // Apply color to overall judgment
+                overallAssessmentDiv.classList.remove('bg-blue-50', 'border-blue-200', 'bg-green-50', 'border-green-200', 'bg-yellow-50', 'border-yellow-200', 'bg-red-50', 'border-red-200');
+                switch (data.overallJudgement.toLowerCase()) {
+                    case 'low':
+                        overallAssessmentDiv.classList.add('bg-green-50', 'border-green-200');
+                        break;
+                    case 'moderate':
+                        overallAssessmentDiv.classList.add('bg-yellow-50', 'border-yellow-200');
+                        break;
+                    case 'serious':
+                        overallAssessmentDiv.classList.add('bg-orange-50', 'border-orange-200');
+                        break;
+                    case 'critical':
+                        overallAssessmentDiv.classList.add('bg-red-50', 'border-red-200');
+                        break;
+                    default:
+                        overallAssessmentDiv.classList.add('bg-blue-50', 'border-blue-200');
+                        break;
+                }
+            } else {
+                overallAssessmentDiv.style.display = 'none';
+            }
+        }
+
+        /**
+         * Shows the loading spinner.
+         */
+        function showLoading() {
+            loadingSpinner.style.display = 'block';
+            assessButton.disabled = true;
+            pdfInput.disabled = true;
+        }
+
+        /**
+         * Hides the loading spinner.
+         */
+        function hideLoading() {
+            loadingSpinner.style.display = 'none';
+            assessButton.disabled = false;
+            pdfInput.disabled = false;
+        }
+
+        /**
+         * Displays a message in the message box.
+         * @param {string} message - The message to display.
+         * @param {'success'|'warning'|'error'} type - The type of message.
+         */
+        function showMessage(message, type) {
+            messageBox.textContent = message;
+            messageBox.style.display = 'block';
+            messageBox.className = 'message-box'; // Reset classes
+            switch (type) {
+                case 'success':
+                    messageBox.classList.add('bg-green-100', 'border-green-400', 'text-green-700');
+                    break;
+                case 'warning':
+                    messageBox.classList.add('bg-yellow-100', 'border-yellow-400', 'text-yellow-700');
+                    break;
+                case 'error':
+                    messageBox.classList.add('bg-red-100', 'border-red-400', 'text-red-700');
+                    break;
+            }
+        }
+
+        /**
+         * Hides the message box.
+         */
+        function hideMessage() {
+            messageBox.style.display = 'none';
+        }
+
+        /**
+         * Clears previous assessment results.
+         */
+        function clearResults() {
+            assessmentTableBody.innerHTML = '';
+            overallReasoningP.textContent = '';
+            overallAssessmentDiv.style.display = 'none';
+            resultsContainer.style.display = 'none'; // Hide results container until new results are ready
+        }
+
+        // Initialize display state
+        clearResults();
+
+    </script>
+</body>
+</html>
